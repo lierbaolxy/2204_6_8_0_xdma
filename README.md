@@ -479,11 +479,63 @@ sudo udevadm trigger --subsystem-match=xdma
 | `xdma/xdma_mod.c` | pci_aer_clear_nonfatal_status 替换 |
 | `.gitignore` | 排除编译产物 |
 
+## 预编译模块直接使用说明
+
+仓库中附带了一份已编译好的 `xdma/xdma.ko`,满足以下两个条件时可以直接加载,无需重新编译。
+
+### 前提条件
+
+**1. 内核版本必须完全一致(6.8.0-136-generic)**
+
+模块的 `vermagic` 绑定 `6.8.0-136-generic`,任何其他版本(包括 6.8.0-135、6.8.0-137 等)都无法加载,会报 `Invalid module format`。必须用源码重新编译。
+
+**2. Secure Boot 必须关闭**
+
+本模块未签名。如果 Secure Boot 开启,会报 `Required key not available`。需要签名模块或关闭 Secure Boot。
+
+### 加载步骤
+
+```bash
+# 1. 检查内核版本(必须完全一致)
+uname -r
+# 输出必须是:6.8.0-136-generic
+
+# 2. 检查 Secure Boot(必须关闭)
+mokutil --sb-state
+# 输出必须是:SecureBoot disabled
+
+# 3. 满足以上两个条件后,可以直接加载
+sudo insmod xdma.ko
+```
+
+### 模块信息
+
+- 无依赖模块(`depends:` 为空,不需要先加载其他模块)
+- 支持的 PCI 设备:Xilinx 系列(vendor `10ee`,device `7021`/`7028`/`8028` 等多种型号)
+- 驱动版本:2018.3.50
+
+### 加载后验证
+
+```bash
+# 检查模块是否加载成功
+lsmod | grep xdma
+
+# 检查设备节点是否生成
+ls -l /dev/xdma*
+
+# 查看内核日志(如有错误)
+dmesg | grep xdma
+```
+
+> 如果不满足以上条件,请按"编译方法"小节用源码重新编译。
+
 ## 已知限制
 
 1. **预编译 `xdma.ko` 仅适用于 6.8.0-136-generic 内核**,其他版本必须重新编译
-2. 预编译测试工具仅适用于 x86-64 架构
-3. 驱动原始版本为 2018.3,未包含 Xilinx 后续版本的修复和功能增强
+2. 预编译 `xdma.ko` 未签名,Secure Boot 开启时无法加载
+3. 预编译测试工具仅适用于 x86-64 架构(仅依赖 glibc,不限内核版本)
+4. 驱动原始版本为 2018.3,未包含 Xilinx 后续版本的修复和功能增强
+5. 代码中的 API 适配为无条件修改,**未在 5.15 / 6.2 内核上测试**,理论兼容 6.5+ 内核
 
 ## 参考
 
