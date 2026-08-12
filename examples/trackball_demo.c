@@ -17,8 +17,8 @@
 #include <signal.h>
 
 #define C2H_DEV       "/dev/xdma0_c2h_0"       /* FPGA→PC DMA 通道 */
+#define H2C_DEV       "/dev/xdma0_h2c_0"       /* PC→FPGA DMA 通道 */
 #define EVENT_DEV     "/dev/xdma0_events_0"    /* 中断通知通道 */
-#define CONTROL_DEV   "/dev/xdma0_control"     /* 寄存器读写 */
 
 /* 轨迹球数据包格式(根据你的 FPGA 协议定义) */
 #pragma pack(push, 1)
@@ -44,9 +44,7 @@ static void sig_handler(int sig)
  */
 static int wait_event(int fd, int timeout_ms)
 {
-    struct {
-        uint32_t dummy;
-    } evt;
+    uint32_t evt;
     fd_set rfds;
     struct timeval tv;
     int ret;
@@ -79,7 +77,6 @@ static int wait_event(int fd, int timeout_ms)
  */
 static ssize_t read_dma(int fd, void *buf, size_t size, uint64_t addr)
 {
-    /* 用 pread 指定 FPGA 端地址,C2H/H2C 通道支持 */
     ssize_t ret = pread(fd, buf, size, addr);
     if (ret < 0)
         perror("read dma");
@@ -87,64 +84,57 @@ static ssize_t read_dma(int fd, void *buf, size_t size, uint64_t addr)
 }
 
 /*
- * 读写 FPGA 寄存器(control 设备不支持 lseek,必须用 pread/pwrite)
+ * 通过 DMA 写数据到 FPGA
+ * addr: FPGA 端 AXI 地址(BRAM 偏移)
+ * size: 写入字节数
+ * 返回: 实际写入字节数, <0 错误
  */
-static int write_register(int fd, uint32_t addr, uint32_t value)
+static ssize_t write_dma(int fd, const void *buf, size_t size, uint64_t addr)
 {
-    if (pwrite(fd, &value, sizeof(value), addr) != sizeof(value)) {
-        perror("pwrite register");
-        return -1;
-    }
-    return 0;
-}
-
-static uint32_t read_register(int fd, uint32_t addr)
-{
-    uint32_t value = 0;
-    pread(fd, &value, sizeof(value), addr);
-    return value;
+    ssize_t ret = pwrite(fd, buf, size, addr);
+    if (ret < 0)
+        perror("write dma");
+    return ret;
 }
 
 int main(int argc, char *argv[])
 {
-    int c2h_fd, evt_fd, ctrl_fd;
+    int c2h_fd, h2c_fd, evt_fd;
     struct trackball_packet pkt;
     ssize_t nbytes;
     int ret;
 
     signal(SIGINT, sig_handler);
 
-    /* 打开设备 */
-    c2h_fd = open(C2H_DEV, O_RDWR);
+    /* 打开 C2H 通道(读 FPGA 数据) */
+    c2h_fd = open(C2H_DEV, O_RDONLY);
     if (c2h_fd < 0) {
         perror("open " C2H_DEV);
         return 1;
     }
 
+    /* 打开 H2C 通道(写数据到 FPGA) */
+    h2c_fd = open(H2C_DEV, O_WRONLY);
+    if (h2c_fd < 0) {
+        perror("open " H2C_DEV);
+        close(c2h_fd);
+        return 1;
+    }
+
+    /* 打开 events 通道(等中断) */
     evt_fd = open(EVENT_DEV, O_RDONLY);
     if (evt_fd < 0) {
         perror("open " EVENT_DEV);
         close(c2h_fd);
-        return 1;
-    }
-
-    ctrl_fd = open(CONTROL_DEV, O_RDWR);
-    if (ctrl_fd < 0) {
-        perror("open " CONTROL_DEV);
-        close(c2h_fd);
-        close(evt_fd);
+        close(h2c_fd);
         return 1;
     }
 
     printf("XDMA 轨迹球采集启动\n");
-    printf("  C2H:    %s\n", C2H_DEV);
-    printf("  Event:  %s\n", EVENT_DEV);
-    printf("  Ctrl:   %s\n", CONTROL_DEV);
-
-    /* 可选:通过寄存器配置 FPGA 采集参数 */
-    /* write_register(ctrl_fd, 0x4000, 0x01); */ /* 使能采集 */
-
-    printf("等待轨迹球数据...\n\n");
+    printf("  C2H (读): %s\n", C2H_DEV);
+    printf("  H2C (写): %s\n", H2C_DEV);
+    printf("  Event:    %s\n", EVENT_DEV);
+    printf("等待轨迹球数据...(Ctrl+C 退出)\n\n");
 
     /* 主循环:中断驱动 */
     while (running) {
@@ -168,12 +158,16 @@ int main(int argc, char *argv[])
                    src, pkt.button,
                    pkt.x_delta, pkt.y_delta,
                    pkt.timestamp);
+
+            /* 示例:收到数据后可以写命令回 FPGA */
+            /* uint8_t ack = 0x01; */
+            /* write_dma(h2c_fd, &ack, sizeof(ack), 0x1000); */
         }
     }
 
     printf("\n退出\n");
     close(c2h_fd);
+    close(h2c_fd);
     close(evt_fd);
-    close(ctrl_fd);
     return 0;
 }
